@@ -1,0 +1,17 @@
+{
+    "raw_text":"TAF PGUA 171800Z 1718/1824 09008KT 9999 BKN015 QNH2984INS TEMPO 1719/1722 090010G15KT 4800 SHRA BKN010 TEMPO 1802/1808 090010G15KT 4800 
+               SHRA BKN010 TX31/1802Z TN26/1718Z",
+    "station_id":"PGUA",
+    "issue_time":"2025-08-17T18: 00: 00Z",
+    "bulletin_time":"2025-08-17T18: 00: 00Z",
+    "valid_time_from":"2025-08-17T18: 00: 00Z",
+    "valid_time_to":"2025-08-19T00: 00: 00Z",
+    "latitude":13.583,
+    "longitude":144.918,
+    "elevation_m":159,
+    "forecast":[{"fcst_time_from":"2025-08-17T18: 00: 00Z",
+                 "fcst_time_to":"2025-08-19T00: 00: 00Z",
+                 "wind_dir_degrees":90,
+                 "wind_speed_kt":8,
+                 "visibility_statute_mi":"6+",
+                 "altim_in_hg":29.85,"sky_condition":{"sky_cover":"BKN","cloud_base_ft_agl":"1500"}},{"fcst_time_from":"2025-08-17T19: 00: 00Z","fcst_time_to":"2025-08-17T22: 00: 00Z","change_indicator":"TEMPO","wind_dir_degrees":90,"wind_speed_kt":10,"wind_gust_kt":15,"visibility_statute_mi":2.98,"wx_string":"SHRA","sky_condition":{"sky_cover":"BKN","cloud_base_ft_agl":"1000"}},{"fcst_time_from":"2025-08-18T02: 00: 00Z","fcst_time_to":"2025-08-18T08: 00: 00Z","change_indicator":"TEMPO","wind_dir_degrees":90,"wind_speed_kt":10,"wind_gust_kt":15,"visibility_statute_mi":2.98,"wx_string":"SHRA","sky_condition":{"sky_cover":"BKN","cloud_base_ft_agl":"1000"},"temperature":[{"valid_time":"2025-08-18T02: 00: 00Z","max_temp_c":31},{"valid_time":"2025-08-17T18: 00: 00Z","min_temp_c":26}]}]}
