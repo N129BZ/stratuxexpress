@@ -4,17 +4,11 @@ import express from 'express';
 import favicon from 'serve-favicon';
 import cors from 'cors';
 import Database from 'better-sqlite3';
-import {atan, exp, pi, pow } from 'mathjs'
+import { atan, exp, pi, pow } from 'mathjs';
 import fs from 'fs';
-
-// const express = require('express');
-// const favicon = require('serve-favicon');
-// const cors = require('cors');
-// const sqlite3 = require('sqlite3');
-// const Math = require("math");
-// const fs = require("fs");
-// const WebSocket = require('ws');
-// const { execSync, exec } = require('child_process');
+import { WebSocketServer } from 'ws';
+import { parseMetarData, parseTafData, parsePirepData, parseWindData as parseWindData } from './messageparser.js';
+import { formatMessageDisplay } from './messagedisplay.js';
 
 const DIRNAME   = process.cwd();
 const ROOT_PATH = `${DIRNAME}/dist`;
@@ -25,6 +19,41 @@ let histdb;
 const databaselist = new Map();
 const databases    = new Map();
 const metadatasets = new Map();
+
+// (function main() {
+    
+//     try {
+//        let ws = new WebSocket("ws://127.0.0.1/weather");
+//        ws.onmessage = (event) => {
+//             let x;
+//             let t;
+//             let j = JSON.parse(event.data);
+//             t = j.Type;
+//             if (t === "METAR" || t === "SIGMET") {
+//                 x = parseMetarData(j);
+//             }
+//             else if (t == "TAF") {
+//                 x = parseTafData(j); 
+//             }
+//             else if (t == "PIREP") {
+//                 x = parsePirepData(j); 
+//             }
+//             else if (t == "WINDS") {
+//                 x = parseWindData(j); 
+//             }
+//             console.log(t, formatMessageDisplay(x));
+//             // Append message to weather.log in the root directory
+//             // fs.appendFile(`${DIRNAME}/stratuxweather.log`, event.data + '\n', (err) => {
+//             //     if (err) {
+//             //         console.error("Failed to write to weather.log:", err);
+//             //     }
+//             // });
+//        };
+//     }
+//     catch (err) {
+//         console.log(err);
+//     }
+// })();
 
 let airports = {};
 loadAirportList();
@@ -158,7 +187,7 @@ try {
         res.sendFile(`${ROOT_PATH}/index.html`);
     });
     
-    app.get("/getsettings", (req, res) => {
+    app.get("/settings", (req, res) => {
         let rawdata = fs.readFileSync(`${DB_PATH}/settings.json`);
         res.json(JSON.parse(rawdata));
         res.end();
@@ -191,7 +220,7 @@ try {
         res.end();
     });    
 
-    app.get("/tiles/*", async(req, res) => {
+    app.get("/tiles/:zyx(*)", async(req, res) => {
         let parts = req.url.split("/");
         let db = databases.get(parts[2]);
         await handleTile(req, res, db);
@@ -211,6 +240,7 @@ catch (err) {
     console.log(err);
 }
 
+
 /**
  * Parse the z,x,y integers, validate, and pass along to loadTile
  * @param {request} http request 
@@ -224,7 +254,7 @@ async function handleTile(request, response, db) {
     let z = 0;
     let idx = -1;
 
-    let parts = request.url.split("/"); 
+    let parts = request.params.zxy.split("/"); 
 	if (parts.length < 5) {
 		return
 	}
@@ -297,4 +327,79 @@ function tileToDegree(z, x, y) {
     let lon = x/pow(2, z)*360.0 - 180.0;
     return [lon, lat]
 }
+
+function sendJsonData(filename, textData) {
+    try {
+        fs.appendFileSync(filename, textData + '\n', 'utf8');
+        console.log(`Appended data to ${filename}`);
+    } catch (err) {
+        console.error(`Failed to append data to ${filename}:`, err);
+    }
+}
+
+// Async sleep function
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Usage in an async function
+async function example() {
+    console.log('Start');
+    await sleep(1000); // sleep for 1 second
+    console.log('End');
+}
+
+/**
+ * This function is guaranteed to run first when imported or required.
+ * Place any initialization logic here.
+ */
+let wxdata = {};
+let widx = -1;
+let wswxsocket = {};
+
+(function startupInit() {
+
+    const wss = new WebSocketServer({ port: 6090 });
+
+    wss.on('connection', (ws) => {
+        console.log('Client connected.');
+        wswxsocket = ws;
+        if (readJson()) {
+            if (wxdata.weather && Array.isArray(wxdata.weather)) {
+                setInterval(sendWeatherReport, 500); // 500 ms = 1/2 second
+            }
+        }
+
+        ws.on('close', () => {
+            console.log('Client disconnected.');
+        });
+
+    });
+    console.log("StratuxExpress server initialization started.");
+    // Add any other startup logic here, such as environment checks or logging
+})();
+
+function readJson() {
+    let fname = `${DIRNAME}/stratuxweather.json`;
+    let data = fs.readFileSync(fname, { encoding: 'utf-8' }); 
+    try {
+        wxdata = JSON.parse(data);
+        console.log("Success reading weather log");
+        return true;
+    } catch (parseErr) {
+        console.error('Error parsing JSON:', parseErr);
+    }
+    return false;
+}
+
+// Example: Execute a function every 5 seconds
+function sendWeatherReport() {
+    widx ++;
+    let rpt = wxdata.weather[widx];
+    wswxsocket.send(JSON.stringify(rpt));
+    if (widx === wxdata.weather.length - 1) {
+        widx = -1;
+    }
+}
+
 
