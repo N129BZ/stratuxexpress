@@ -88,33 +88,17 @@ function loadDatabases() {
     }
 
     try {
-        let dbfiles = fs.readdirSync(TILE_PATH);
-        dbfiles.forEach((dbname) => {
-            if (dbname.endsWith(".db") || dbname.endsWith(".mbtiles")) {
-                const key = dbname.toLowerCase().split(".")[0];
-                const dbfile = `${TILE_PATH}/${dbname}`;
-                databaselist.set(key, dbfile);
-            }
-        });
-    } 
-    catch(error) {
-        console.error(error.message);
-    }
-
-    databaselist.forEach((dbfile, key) => {
-        try {
-            const db = new Database(dbfile, {readonly: true});
-            databases.set(key, db);
-        } catch (error) {
-            console.error(`Failed to load: ${key}: ${error}`);
-        }
-    });
-
-    try {
         histdb = new Database(`${DB_PATH}/positionhistory.db`, {readonly: true});
     } catch (error) {
         console.log(`Failed to load historyDb: ${error}`);
     }
+}
+
+/**
+ * Get Map object filled with metadata sets for all mbtiles databases
+ */
+function loadMetadatasets() {
+    let sql = `SELECT name, value FROM metadata UNION SELECT 'minzoom', min(zoom_level) FROM tiles ` + 
               `WHERE NOT EXISTS (SELECT * FROM metadata WHERE name='minzoom') UNION SELECT 'maxzoom', max(zoom_level) FROM tiles ` +
               `WHERE NOT EXISTS (SELECT * FROM metadata WHERE name='maxzoom')`;
     
@@ -123,51 +107,45 @@ function loadDatabases() {
         item["bounds"] = "";
         item["attribution"] = "";
         let found = false;
+
         try {
-            const selall = db.prepare(sql);
-            const metarows = selall.all();
-            metarows.forEach((row) => {
-                if (row.value != null && row.value != undefined) {
+            const rows = db.prepare(sql).all();
+            rows.forEach((row) => {
+                if (row.value != null) {
                     item[row.name] = row.value;
-                    if (row.name === "maxzoom") { 
-                        let maxZoomInt = parseInt(row.value);
-                        sql = `SELECT min(tile_column) as xmin, min(tile_row) as ymin, ` + 
+                }
+                if (row.name === "maxzoom" && row.value != null) {
+                    let maxZoomInt = parseInt(row.value); 
+                    let minmaxSql = `SELECT min(tile_column) as xmin, min(tile_row) as ymin, ` + 
                                     `max(tile_column) as xmax, max(tile_row) as ymax ` +
-                                `FROM tiles WHERE zoom_level=${maxZoomInt}`;
-                        try {
-                            const selminmax = db.prepare(sql);
-                            const minmaxrow = selminmax.get();
-                            if (minmaxrow != null && minmaxrow != undefined) {
-                                let xmin = minmaxrow.xmin;
-                                let ymin = minmaxrow.ymin; 
-                                let xmax = minmaxrow.xmax; 
-                                let ymax = minmaxrow.ymax;  
-                                
-                                let llmin = tileToDegree(maxZoomInt, xmin, ymin);
-                                let llmax = tileToDegree(maxZoomInt, xmax+1, ymax+1);
-                                
-                                let retarray = `${llmin[0]}, ${llmin[1]}, ${llmax[0]}, ${llmax[1]}`;
-                                item["bounds"] = retarray;
-                                found = true;
-                            }
+                                    `FROM tiles WHERE zoom_level=${maxZoomInt}`;
+                    try {
+                        const minmaxRow = db.prepare(minmaxSql).get();
+                        if (minmaxRow) {
+                            let xmin = minmaxRow.xmin;
+                            let ymin = minmaxRow.ymin; 
+                            let xmax = minmaxRow.xmax; 
+                            let ymax = minmaxRow.ymax;  
+                            
+                            let llmin = tileToDegree(maxZoomInt, xmin, ymin);
+                            let llmax = tileToDegree(maxZoomInt, xmax+1, ymax+1);
+                            
+                            let retarray = `${llmin[0]}, ${llmin[1]}, ${llmax[0]}, ${llmax[1]}`;
+                            item["bounds"] = retarray;
+                            found = true;
                         }
-                        catch(error) {
-                            console.error(error);
-                        }
+                    } catch(error) {
+                        console.error(error);
                     }
                 }
             });
             metadatasets.set(key, item);
-        }
-        catch(error) {
+        } catch(error) {
             console.error(error);
         }
     });
 }
 
-function loadMetadatasets() {
-
-}
 /**
  * Start the express web server
  */
