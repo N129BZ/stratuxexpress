@@ -1,11 +1,10 @@
 import express from 'express';
-import favicon from 'serve-favicon';
 import cors from 'cors';
 import { atan, exp, pi, pow } from 'mathjs';
 import fs from 'fs';
 import { WebSocketServer } from 'ws';
 import Database from 'better-sqlite3';
-
+import http from 'http';
 //////////////////////////////////////////////////////////
 // download link for airport, runway, and frequency data:
 // https://davidmegginson.github.io/ourairports-data/
@@ -17,46 +16,11 @@ const DB_PATH   = `${ROOT_PATH}/data`;
 const TILE_PATH = `${ROOT_PATH}/tiles`;
 
 let histdb;
-const apdb = new Database(`${DIRNAME}/airports.db`, {readonly: true});
+const apdb = new Database(`${DB_PATH}/airports.db`, {readonly: true});
+const cachedb = new Database(`${DB_PATH}/mapstate.db`, {readonly: false});
 const databaselist = new Map();
 const databases    = new Map();
 const metadatasets = new Map();
-
-// (function main() {
-    
-//     try {
-//        let ws = new WebSocket("ws://127.0.0.1/weather");
-//        ws.onmessage = (event) => {
-//             let x;
-//             let t;
-//             let j = JSON.parse(event.data);
-//             t = j.Type;
-//             if (t === "METAR" || t === "SIGMET") {
-//                 x = parseMetarData(j);
-//             }
-//             else if (t == "TAF") {
-//                 x = parseTafData(j); 
-//             }
-//             else if (t == "PIREP") {
-//                 x = parsePirepData(j); 
-//             }
-//             else if (t == "WINDS") {
-//                 x = parseWindData(j); 
-//             }
-//             console.log(t, formatMessageDisplay(x));
-//             // Append message to weather.log in the root directory
-//             // fs.appendFile(`${DIRNAME}/stratuxweather.log`, event.data + '\n', (err) => {
-//             //     if (err) {
-//             //         console.error("Failed to write to weather.log:", err);
-//             //     }
-//             // });
-//        };
-//     }
-//     catch (err) {
-//         console.log(err);
-//     }
-// })();
-
 
 loadDatabases();
 loadMetadatasets();
@@ -149,100 +113,147 @@ function loadMetadatasets() {
 /**
  * Start the express web server
  */
-let app = express();
-try {
-    app.use(express.urlencoded({ extended: true }));
-    app.use(express.json({}));
-    app.use(cors());
-    app.use(favicon(`${ROOT_PATH}/images/favicon.png`));
-    app.listen(8500, '0.0.0.0'); 
+const app = express();
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json({}));
+app.use(cors());
+let appOptions = {
+    maxAge: 900000,
+    dotfiles: 'ignore',
+    etag: false,
+    extensions: ['html'],
+    index: false,
+    redirect: false,
+    setHeaders: function (res, path, stat) {
+        res.set('x-timestamp', Date.now());http
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader('Access-Control-Allow-Methods', '*');
+        res.setHeader("Access-Control-Allow-Headers", "*");
+    }
+};
 
-    console.log(`Server listening on port 8500`);
+app.use(express.static(ROOT_PATH, appOptions));
 
-    let appOptions = {
-        maxAge: 900000,
-        dotfiles: 'ignore',
-        etag: false,
-        extensions: ['html'],
-        index: false,
-        redirect: false,
-        setHeaders: function (res, path, stat) {
-            res.set('x-timestamp', Date.now());
-            res.setHeader("Access-Control-Allow-Origin", "*");
-            res.setHeader('Access-Control-Allow-Methods', '*');
-            res.setHeader("Access-Control-Allow-Headers", "*");                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
-        }
-    };
+app.get('/', (req, res) => {
+    res.sendFile(`${ROOT_PATH}/map.html`);
+});
 
-    app.use(express.static(ROOT_PATH, appOptions));
-    
-    app.get('/', (req, res) => {
-        res.sendFile(`${ROOT_PATH}/index.html`);
+app.get("/settings", (req, res) => {
+    let rawdata = fs.readFileSync(`${DB_PATH}/settings.json`);
+    res.json(JSON.parse(rawdata));
+    res.end();
+});
+
+app.get("/databaselist", (req, res) => {
+    let obj = [];
+    databaselist.forEach((value, key) => {
+        obj.push(key);
     });
-    
-    app.get("/settings", (req, res) => {
-        let rawdata = fs.readFileSync(`${DB_PATH}/settings.json`);
-        res.json(JSON.parse(rawdata));
-        res.end();
-    });
+    res.json(obj); 
+    res.end();
+});
 
-    app.get("/databaselist", (req, res) => {
-        let obj = [];
-        databaselist.forEach((value, key) => {
-            obj.push(key);
-        });
-        res.json(obj); 
-        res.end();
-    });
+app.get("/airport", (req, res) => {
+    let id = req.query.id;
+    let obj = handleAirportRequest(id);
+    if (!obj) {
+        res.json({});
+    } 
+    else {
+        res.json(obj);
+    }
+});
 
-    app.get("/airport/:id", (req, res) => {
-        let id = req.params.id;
-        let obj = handleAirportRequest(id);
-        if (!obj) {
+app.get("/airportlist", (req, res) => {
+    res.json(airports);
+    res.end();
+});
+
+app.get("/getmapstate", async(req, res) => {
+    try {
+        const row = cachedb.prepare("SELECT state FROM mapstate WHERE id = 1").get();
+        if (row && row.state) {
+            // Parse the stored JSON string before sending
+            res.json(JSON.parse(row.state));
+        } else {
             res.json({});
-        } 
-        else {
-            res.json(obj);
         }
-    });
+    } catch (err) {
+        console.error("Failed to get mapstate:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
 
-    app.get("/airportlist", (req, res) => {
-        res.json(airports);
-        res.end();
-    });
+app.post("/savemapstate", (req, res) => {
+    const newState = JSON.stringify(req.body);
+    try {
+        // Update the state field in the mapstate table where id = 1
+        const stmt = cachedb.prepare("UPDATE mapstate SET state = ? WHERE id = 1");
+        stmt.run(newState);
+        res.json({ success: true });
+    } catch (err) {
+        console.error("Failed to update mapstate:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
-    app.get("/metadatasets", (req, res) => {
-        let dbs = [];
-        console.log("metadatasets count = ", metadatasets.size);
-        metadatasets.forEach((item, key) => {
-            let lineitem = {};
-            lineitem["key"] = key;
-            lineitem["value"] = item;
-            dbs.push(lineitem);
-        });
-        res.json(dbs); 
-        res.end();
-    });    
-
-    app.get("/tiles/:zyx(*)", async(req, res) => {
-        let parts = req.url.split("/");
-        let db = databases.get(parts[2]);
-        await handleTile(req, res, db);
+app.get("/metadatasets", (req, res) => {
+    let dbs = [];
+    console.log("metadatasets count = ", metadatasets.size);
+    metadatasets.forEach((item, key) => {
+        let lineitem = {};
+        lineitem["key"] = key;
+        lineitem["value"] = item;
+        dbs.push(lineitem);
     });
+    res.json(dbs); 
+    res.end();
+});    
 
-    app.get("/gethistory", (req,res) => {
-        getPositionHistory(res);
-    });
+app.get("/tiles/:zyx(*)", async(req, res) => {
+    let parts = req.url.split("/");
+    let db = databases.get(parts[2]);
+    await handleTile(req, res, db);
+});
 
-    app.post("/savehistory", (req, res) => {
-        savePositionHistory(req.body);
-        res.writeHead(200);
-        res.end();
-    });
-}
-catch(error) {
-    console.error(error);
-}
+app.get("/gethistory", (req,res) => {
+    getPositionHistory(res);
+});
+
+app.post("/savehistory", (req, res) => {
+    savePositionHistory(req.body);
+    res.writeHead(200);
+    res.end();
+});
+
+// --- HTTP server and WebSocketServer setup ---
+const httpServer = http.createServer(app);
+httpServer.listen(8500, '0.0.0.0', () => {
+    console.log('Server listening on port 8500');
+});
+
+const wss = new WebSocketServer({ server: httpServer });
+wss.on('connection', (ws, request) => {
+    if (request.url === '/weather') {
+        console.log('WebSocket /weather connection established');
+        let widx = -1;
+        const wxdata = readJson();
+        if (wxdata && wxdata.weather && Array.isArray(wxdata.weather)) {
+            const interval = setInterval(() => {
+                widx++;
+                let rpt = wxdata.weather[widx];
+                ws.send(JSON.stringify(rpt));
+                if (widx === wxdata.weather.length - 1) {
+                    widx = -1;
+                }
+            }, 1000);
+            ws.on('close', () => {
+                clearInterval(interval);
+                console.log('Client disconnected.');
+            });
+        }
+    }
+});
 
 function handleAirportRequest(id) {
     const sql = `
@@ -378,73 +389,16 @@ function tileToDegree(z, x, y) {
     return [lon, lat]
 }
 
-function sendJsonData(filename, textData) {
-    try {
-        fs.appendFileSync(filename, textData + '\n', 'utf8');
-        console.log(`Appended data to ${filename}`);
-    } catch (err) {
-        console.error(`Failed to append data to ${filename}:`, err);
-    }
-}
-
-// Async sleep function
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Usage in an async function
-async function example() {
-    console.log('Start');
-    await sleep(1000); // sleep for 1 second
-    console.log('End');
-}
-
-/**
- * This function is guaranteed to run first when imported or required.
- * Place any initialization logic here.
- */
-let wxdata = {};
-let widx = -1;
-let wswxsocket = {};
-
-(function startupInit() {
-
-    const wss = new WebSocketServer({ port: 8550 });
-
-    wss.on('connection', (ws) => {
-        console.log('Client connected.');
-        wswxsocket = ws;
-        if (readJson()) {
-            if (wxdata.weather && Array.isArray(wxdata.weather)) {
-                setInterval(sendWeatherReport, 1000); // 1000 ms = 1 second
-            }
-        }
-
-        ws.on('close', () => {
-            console.log('Client disconnected.');
-        });
-
-    });
-})();
-
 function readJson() {
     let fname = `${DIRNAME}/stratuxweather.json`;
     let data = fs.readFileSync(fname, { encoding: 'utf-8' }); 
     try {
-        wxdata = JSON.parse(data);
+        let wxdata = JSON.parse(data);
         console.log("Success reading weather log");
-        return true;
+        return wxdata;
     } catch (parseErr) {
         console.error('Error parsing JSON:', parseErr);
+        return null;
     }
-    return false;
-}
-
-function sendWeatherReport() {
-    widx ++;
-    let rpt = wxdata.weather[widx];
-    wswxsocket.send(JSON.stringify(rpt));
-    if (widx === wxdata.weather.length - 1) {
-        widx = -1;
-    }
+    return null;
 }
