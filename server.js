@@ -114,9 +114,12 @@ function loadMetadatasets() {
  * Start the express web server
  */
 const app = express();
+const httpServer = http.createServer(app);
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({}));
 app.use(cors());
+
 let appOptions = {
     maxAge: 900000,
     dotfiles: 'ignore',
@@ -226,12 +229,7 @@ app.post("/savehistory", (req, res) => {
     res.end();
 });
 
-// --- HTTP server and WebSocketServer setup ---
-const httpServer = http.createServer(app);
-httpServer.listen(8500, '0.0.0.0', () => {
-    console.log('Server listening on port 8500');
-});
-
+let wxinterval = null;
 const wss = new WebSocketServer({ server: httpServer });
 wss.on('connection', (ws, request) => {
     if (request.url === '/weather') {
@@ -239,7 +237,7 @@ wss.on('connection', (ws, request) => {
         let widx = -1;
         const wxdata = readJson();
         if (wxdata && wxdata.weather && Array.isArray(wxdata.weather)) {
-            const interval = setInterval(() => {
+            wxinterval = setInterval(() => {
                 widx++;
                 let rpt = wxdata.weather[widx];
                 ws.send(JSON.stringify(rpt));
@@ -247,12 +245,24 @@ wss.on('connection', (ws, request) => {
                     widx = -1;
                 }
             }, 1000);
-            ws.on('close', () => {
-                clearInterval(interval);
-                console.log('Client disconnected.');
-            });
+            
         }
     }
+    else if (request.url === '/traffic') {
+        console.log("traffic websocket connected");
+    }
+    else if (request.url === '/situation') {
+        console.log("situation websocket connected");
+    }
+
+    ws.on('close', () => {
+        clearInterval(wxinterval);
+        console.log('Client disconnected.');
+    });
+});
+
+httpServer.listen(8500, '0.0.0.0', () => {
+    console.log('Server listening on port 8500');
 });
 
 function handleAirportRequest(id) {
@@ -291,14 +301,19 @@ function handleAirportRequest(id) {
         FROM airports
         WHERE airports.ident = ?;
     `;
-    let obj = apdb.prepare(sql).get(id);
-    if (obj) {
-        obj.frequencies = obj.frequencies ? JSON.parse(obj.frequencies) : [];
-        obj.runways = obj.runways ? JSON.parse(obj.runways) : [];
-        return obj;
+    try {
+        let obj = apdb.prepare(sql).get(id);
+        if (obj) {
+            obj.frequencies = obj.frequencies ? JSON.parse(obj.frequencies) : [];
+            obj.runways = obj.runways ? JSON.parse(obj.runways) : [];
+            return obj;
+        }
+        else {
+            return {};
+        }
     }
-    else {
-        return {};
+    catch(err) {
+        console.log("Error in handleAirportRequest", err);
     }
 }
 
