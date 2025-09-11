@@ -196,6 +196,7 @@ app.post("/savemapstate", (req, res) => {
         const stmt = cachedb.prepare("UPDATE mapstate SET state = ? WHERE id = 1");
         stmt.run(newState);
         res.json({ success: true });
+        console.log("Mapstate updated successfully");
     } catch (err) {
         console.error("Failed to update mapstate:", err);
         res.status(500).json({ success: false, error: err.message });
@@ -215,8 +216,28 @@ app.get("/metadatasets", (req, res) => {
     res.end();
 });    
 
-app.get("/tiles", (req, res) => {
-    handleTile(req, res);
+app.get("/tiles/*", (req, res) => {
+    // Remove query string and split path
+    const path = req.path; // e.g. "/tiles/chicago/5/8/11.png"
+    const parts = path.split("/"); // ["", "tiles", "chicago", "5", "8", "11.png"]
+
+    if (parts.length < 6) {
+        res.status(400).send("Invalid tile URL");
+        return;
+    }
+
+    const dbname = parts[2].toLowerCase();
+    const z = parseInt(parts[3]);
+    const x = parseInt(parts[4]);
+    const yRaw = parts[5];
+    const y = parseInt(yRaw.split(".")[0]);
+    const db = databases.get(dbname);
+
+    if (!db) {
+        res.status(404).send("Database not found");
+        return;
+    }
+    loadTile(z, x, y, res, db);
 });
 
 app.get("/gethistory", (req,res) => {
@@ -325,38 +346,22 @@ function handleAirportRequest(id) {
  * @returns the results of calling loadTile
  */
 function handleTile(request, response) {
-
-    let dbpart = req.url.split("/");
-    let db = databases.get(parts[2]);
-
-    let x = 0;
-    let y = 0;
-    let z = 0;
-    let idx = -1;
-
-    let parts = request.params.zxy.split("/"); 
-	if (parts.length < 5) {
-		return
-	}
-
-	try {
-        idx = parts.length - 1;
-        let yparts = parts[idx].split(".");
-        y = parseInt(yparts[0])
-
-    } 
-    catch(err) {
-        res.writeHead(500, "Failed to parse y");
-        response.end();
-        return;
+    try {
+        const dbname = request.params.dbname.toLowerCase();
+        const z = parseInt(request.params.z);
+        const x = parseInt(request.params.x);
+        // Handle y with possible extension (e.g., "11.png")
+        let yRaw = request.params.y;
+        let y = parseInt(yRaw.split(".")[0]);
+        const db = databases.get(dbname);
+        if (!db) {
+            response.status(404).send("Database not found");
+            return;
+        }
+        loadTile(z, x, y, response, db);
+    } catch (err) {
+        response.status(500).send("Failed to parse tile parameters");
     }
-    
-    idx--
-    x = parseInt(parts[idx]);
-    idx-- 
-    z = parseInt(parts[idx]);
-    idx--
-    loadTile(z, x, y, response, db); 
 }
 
 /**
@@ -369,28 +374,32 @@ function handleTile(request, response) {
  * @param {database} sqlite database
  */
 function loadTile(z, x, y, response, db) {
-    let sql = `SELECT tile_data FROM tiles WHERE zoom_level=${z} AND tile_column=${x} AND tile_row=${y}`;
-    db.get(sql, (err, row) => {
-        if (!err) {
-            if (row == undefined) {
-                response.writeHead(200);
-                response.end();
-            }
-            else {
-                if (row.tile_data != undefined) {
-                    let png = row.tile_data;
-                    response.writeHead(200);
-                    response.write(png);
-                    response.end();
-                }
-            }
-        }
-        else {
-            console.log(err);
-            response.writeHead(500, err.message);
+    if (isNaN(z) || isNaN(x) || isNaN(y)) {
+        response.writeHead(400);
+        response.end("Invalid tile coordinates");
+        return;
+    }
+    try {
+        // Use a prepared statement for safety and correctness
+        const stmt = db.prepare(
+            "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?"
+        );
+        const row = stmt.get(z, x, y); // Pass parameters directly
+
+        if (!row || !row.tile_data) {
+            response.writeHead(404);
             response.end();
-        } 
-    });
+        } else {
+            response.writeHead(200);
+            response.write(row.tile_data);
+            response.end();
+        }
+    }
+    catch (err) {
+        // console.error("Error in loadTile", err);
+        // response.writeHead(500);
+        // response.end();
+    }
 }
 
 /**
