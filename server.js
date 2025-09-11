@@ -5,15 +5,15 @@ import fs from 'fs';
 import { WebSocketServer } from 'ws';
 import Database from 'better-sqlite3';
 import http from 'http';
-//////////////////////////////////////////////////////////
-// download link for airport, runway, and frequency data:
-// https://davidmegginson.github.io/ourairports-data/
-//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////
+// Download link for airport, runway, and frequency csv data:
+//    https://davidmegginson.github.io/ourairports-data/
+//////////////////////////////////////////////////////////////
 
 const DIRNAME   = process.cwd();
 const ROOT_PATH = `${DIRNAME}/dist`;
 const DB_PATH   = `${ROOT_PATH}/data`;
-const TILE_PATH = `${ROOT_PATH}/tiles`;
+const TILE_PATH = `${DIRNAME}/tiles`;
 
 let histdb;
 const apdb = new Database(`${DB_PATH}/airports.db`, {readonly: true});
