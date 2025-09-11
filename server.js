@@ -13,7 +13,7 @@ import http from 'http';
 const DIRNAME   = process.cwd();
 const ROOT_PATH = `${DIRNAME}/dist`;
 const DB_PATH   = `${ROOT_PATH}/data`;
-const TILE_PATH = `${DIRNAME}/tiles`;
+const TILE_PATH = `${ROOT_PATH}/tiles`;
 
 let histdb;
 const apdb = new Database(`${DB_PATH}/airports.db`, {readonly: true});
@@ -371,7 +371,7 @@ function handleTile(request, response) {
  * @param {integer} x 
  * @param {integer} y 
  * @param {http response} http response object 
- * @param {database} sqlite database
+ * @param {Database} sqlite database
  */
 function loadTile(z, x, y, response, db) {
     if (isNaN(z) || isNaN(x) || isNaN(y)) {
@@ -384,7 +384,7 @@ function loadTile(z, x, y, response, db) {
         const stmt = db.prepare(
             "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?"
         );
-        const row = stmt.get(z, x, y); // Pass parameters directly
+        const row = stmt.get(z, x, -y); // Pass parameters directly
 
         if (!row || !row.tile_data) {
             response.writeHead(404);
