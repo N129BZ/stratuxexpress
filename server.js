@@ -117,7 +117,7 @@ const app = express();
 const httpServer = http.createServer(app);
 
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json({}));
+app.use(express.json({ limit: '10mb' }));
 app.use(cors());
 
 let appOptions = {
@@ -140,6 +140,8 @@ app.use(express.static(ROOT_PATH, appOptions));
 app.get('/', (req, res) => {
     res.sendFile(`${ROOT_PATH}/map.html`);
 });
+
+//app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 app.get("/settings", (req, res) => {
     let rawdata = fs.readFileSync(`${DB_PATH}/settings.json`);
@@ -213,10 +215,8 @@ app.get("/metadatasets", (req, res) => {
     res.end();
 });    
 
-app.get("/tiles/:zyx(*)", async(req, res) => {
-    let parts = req.url.split("/");
-    let db = databases.get(parts[2]);
-    await handleTile(req, res, db);
+app.get("/tiles", (req, res) => {
+    handleTile(req, res);
 });
 
 app.get("/gethistory", (req,res) => {
@@ -324,7 +324,11 @@ function handleAirportRequest(id) {
  * @param {db} database 
  * @returns the results of calling loadTile
  */
-async function handleTile(request, response, db) {
+function handleTile(request, response) {
+
+    let dbpart = req.url.split("/");
+    let db = databases.get(parts[2]);
+
     let x = 0;
     let y = 0;
     let z = 0;
@@ -352,7 +356,7 @@ async function handleTile(request, response, db) {
     idx-- 
     z = parseInt(parts[idx]);
     idx--
-    await loadTile(z, x, y, response, db); 
+    loadTile(z, x, y, response, db); 
 }
 
 /**
@@ -364,7 +368,7 @@ async function handleTile(request, response, db) {
  * @param {http response} http response object 
  * @param {database} sqlite database
  */
-async function loadTile(z, x, y, response, db) {
+function loadTile(z, x, y, response, db) {
     let sql = `SELECT tile_data FROM tiles WHERE zoom_level=${z} AND tile_column=${x} AND tile_row=${y}`;
     db.get(sql, (err, row) => {
         if (!err) {
