@@ -129,6 +129,10 @@ let appOptions = {
     redirect: false,
     setHeaders: function (res, path, stat) {
         res.set('x-timestamp', Date.now());http
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Surrogate-Control', 'no-store');
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader('Access-Control-Allow-Methods', '*');
         res.setHeader("Access-Control-Allow-Headers", "*");
@@ -384,7 +388,7 @@ function loadTile(z, x, y, response, db) {
         const stmt = db.prepare(
             "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?"
         );
-        const row = stmt.get(z, x, -y); // Pass parameters directly
+        const row = stmt.get(z, x, y); // Pass parameters directly
 
         if (!row || !row.tile_data) {
             response.writeHead(404);
