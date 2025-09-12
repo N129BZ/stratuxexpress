@@ -207,7 +207,22 @@ app.post("/savemapstate", (req, res) => {
     }
 });
 
-app.get("/metadatasets", (req, res) => {
+app.get("/metadataset", (req, res) => {
+    const dbKey = req.query.db;
+    if (!dbKey) {
+        res.status(400).json({ error: "Missing 'db' query parameter" });
+        return;
+    }
+    const metadata = metadatasets.get(dbKey);
+    if (!metadata) {
+        res.status(404).json({ error: `No metadata found for db '${dbKey}'` });
+        return;
+    }
+    res.json({ key: dbKey, value: metadata });
+    res.end();
+});    
+
+app.get("/tiles/tilesets", (req, res) => {
     let dbs = [];
     console.log("metadatasets count = ", metadatasets.size);
     metadatasets.forEach((item, key) => {
