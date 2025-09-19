@@ -1,3 +1,5 @@
+'use strict';
+
 import express from 'express';
 import cors from 'cors';
 import { atan, exp, pi, pow } from 'mathjs';
@@ -17,7 +19,7 @@ const TILE_PATH = `${ROOT_PATH}/tiles`;
 
 let histdb;
 const apdb = new Database(`${DB_PATH}/airports.db`, {readonly: true});
-const cachedb = new Database(`${DB_PATH}/mapstate.db`, {readonly: false});
+const mapdb = new Database(`${DB_PATH}/mapstate.db`, {readonly: false});
 const databaselist = new Map();
 const databases    = new Map();
 const metadatasets = new Map();
@@ -30,7 +32,7 @@ function loadDatabases() {
         let dbfiles = fs.readdirSync(TILE_PATH);
         dbfiles.forEach((dbname) => {
             if (dbname.endsWith(".db") || dbname.endsWith(".mbtiles")) {
-                var key = dbname.toLowerCase().split(".")[0];
+                var key = dbname.split(".")[0];
                 var dbfile = `${TILE_PATH}/${dbname}`;
                 databaselist.set(key, dbfile);
             }
@@ -142,7 +144,7 @@ let appOptions = {
 app.use(express.static(ROOT_PATH, appOptions));
 
 app.get('/', (req, res) => {
-    res.sendFile(`${ROOT_PATH}/map.html`);
+    res.sendFile(`${ROOT_PATH}/map2.html`);
 });
 
 //app.get('/favicon.ico', (req, res) => res.status(204).end());
@@ -180,10 +182,10 @@ app.get("/airportlist", (req, res) => {
 
 app.get("/getmapstate", async(req, res) => {
     try {
-        const row = cachedb.prepare("SELECT state FROM mapstate WHERE id = 1").get();
+        const row = mapdb.prepare("SELECT state, timestamp FROM mapstate WHERE id = 1").get();
         if (row && row.state) {
-            // Parse the stored JSON string before sending
-            res.json(JSON.parse(row.state));
+            let mapstate = { state: JSON.parse(row.state), timestamp: row.timestamp };
+            res.json(mapstate);
         } else {
             res.json({});
         }
@@ -194,13 +196,14 @@ app.get("/getmapstate", async(req, res) => {
 });
 
 app.post("/savemapstate", (req, res) => {
-    const newState = JSON.stringify(req.body);
+    const newState = req.body;
+    const ts = newState["timestamp"];
     try {
-        // Update the state field in the mapstate table where id = 1
-        const stmt = cachedb.prepare("UPDATE mapstate SET state = ? WHERE id = 1");
-        stmt.run(newState);
+        // Update the state and timestamp fields in the mapstate table where id = 1
+        const stmt = mapdb.prepare("UPDATE mapstate SET state = ?, timestamp = ? WHERE id = 1");
+        stmt.run(JSON.stringify(newState), ts);
         res.json({ success: true });
-        console.log("Mapstate updated successfully");
+        console.log("Mapstate and timestamp updated successfully");
     } catch (err) {
         console.error("Failed to update mapstate:", err);
         res.status(500).json({ success: false, error: err.message });
@@ -223,17 +226,12 @@ app.get("/metadataset", (req, res) => {
 });    
 
 app.get("/tiles/tilesets", (req, res) => {
-    let dbs = [];
-    console.log("metadatasets count = ", metadatasets.size);
+    const result = {};
     metadatasets.forEach((item, key) => {
-        let lineitem = {};
-        lineitem["key"] = key;
-        lineitem["value"] = item;
-        dbs.push(lineitem);
+        result[key] = item;
     });
-    res.json(dbs); 
-    res.end();
-});    
+    res.json(result);
+});  
 
 app.get("/tiles/*", (req, res) => {
     // Remove query string and split path
@@ -245,7 +243,7 @@ app.get("/tiles/*", (req, res) => {
         return;
     }
 
-    const dbname = parts[2].toLowerCase();
+    const dbname = parts[2];
     const z = parseInt(parts[3]);
     const x = parseInt(parts[4]);
     const yRaw = parts[5];
@@ -264,7 +262,7 @@ app.get("/gethistory", (req,res) => {
 });
 
 app.post("/savehistory", (req, res) => {
-    savePositionHistory(req.body);
+    savePositionHistory(req, res);
     res.writeHead(200);
     res.end();
 });
@@ -304,6 +302,31 @@ wss.on('connection', (ws, request) => {
 httpServer.listen(8500, '0.0.0.0', () => {
     console.log('Server listening on port 8500');
 });
+
+function getPositionHistory() {
+    try {
+        const rows = mapdb.prepare("SELECT * FROM position_history ORDER BY timestamp DESC").all();
+        res.json(rows);
+    } 
+    catch (err) {
+        console.error("Failed to get position history:", err);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+function savePositionHistory(req) {
+    try {
+        const poshist = JSON.parse(req.body);
+        // Update the state and timestamp fields in the mapstate table where id = 1
+        const stmt = mapdb.prepare(`INSERT position_history (longitude, latitude, heading, altitude)
+                                    VALUES (?, ?, ?, ?);`);
+        stmt.run(poshist.longitude, poshist.latitude, poshist.heading, poshist.altitude);
+        console.log("Position history saved.");
+    } 
+    catch (err) {
+        console.error("Failed to update position history:", err);
+    }
+}
 
 function handleAirportRequest(id) {
     const sql = `
@@ -366,7 +389,7 @@ function handleAirportRequest(id) {
  */
 function handleTile(request, response) {
     try {
-        const dbname = request.params.dbname.toLowerCase();
+        const dbname = request.params.dbname;
         const z = parseInt(request.params.z);
         const x = parseInt(request.params.x);
         // Handle y with possible extension (e.g., "11.png")
@@ -406,7 +429,7 @@ function loadTile(z, x, y, response, db) {
         const row = stmt.get(z, x, y); // Pass parameters directly
 
         if (!row || !row.tile_data) {
-            response.writeHead(404);
+            //response.writeHead(404);
             response.end();
         } else {
             response.writeHead(200);
