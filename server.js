@@ -115,7 +115,7 @@ function loadMetadatasets() {
 /**
  * Start the express web server
  */
-const app = express();
+const app = express0();
 const httpServer = http.createServer(app);
 
 app.use(express.urlencoded({ extended: true }));
@@ -144,10 +144,8 @@ let appOptions = {
 app.use(express.static(ROOT_PATH, appOptions));
 
 app.get('/', (req, res) => {
-    res.sendFile(`${ROOT_PATH}/map2.html`);
+        res.sendFile(`${ROOT_PATH}/map2.html`);
 });
-
-//app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 app.get("/settings", (req, res) => {
     let rawdata = fs.readFileSync(`${DB_PATH}/settings.json`);
@@ -459,16 +457,54 @@ function tileToDegree(z, x, y) {
     return [lon, lat]
 }
 
-function readJson() {
-    let fname = `${DIRNAME}/stratuxweather.json`;
-    let data = fs.readFileSync(fname, { encoding: 'utf-8' }); 
-    try {
-        let wxdata = JSON.parse(data);
-        console.log("Success reading weather log");
-        return wxdata;
-    } catch (parseErr) {
-        console.error('Error parsing JSON:', parseErr);
-        return null;
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/* This function is guaranteed to run first when imported or required.
+ * Place any initialization logic here.
+ */
+let wxdata = {};
+let widx = -1;
+let wswxsocket = {};
+
+(function startupInit() {
+    const wss = new WebSocketServer({ port: 8550 });
+
+    wss.on('connection', (ws) => {
+        console.log('Client connected.');
+        wswxsocket = ws;
+    
+        parseCsv();
+
+        ws.on('close', () => {
+            console.log('Client disconnected.');
+        });
+    });
+})();
+
+async function parseCsv() {
+    const parser = fs
+    .createReadStream(`${DIRNAME}/weather/metars.cache.csv`)
+    .pipe(csv({
+      columns: true,      // Automatically maps columns based on the header row
+      skip_empty_lines: true
+    }));
+
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    for await (const record of parser) {
+        // 'record' is a JavaScript object with keys from the header
+        const message = {
+            Type: record.metar_type,
+            Location: record.station_id,
+            Time: record.observation_time,
+            Data: record.raw_text,
+            LocaltimeReceived: new Date()
+        }
+        wswxsocket.send(JSON.stringify(message));
+        //console.log(message);
+        await delay(600);
     }
-    return null;
+    return true;
 }
