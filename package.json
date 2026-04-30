@@ -12,17 +12,19 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "better-sqlite3": "^12.2.0",
+    "cd": "^0.3.3",
     "child_process": "^1.0.2",
     "cors": "^2.8.5",
     "csv-parser": "^3.2.0",
     "express": "^4.21.2",
+    "express-ws": "^5.0.2",
     "fs": "^0.0.1-security",
     "http": "^0.0.1-security",
     "json2html": "^0.0.8",
     "mathjs": "^15.2.0",
     "re": "^0.1.4",
-    "sqlite3": "^5.1.7",
+    "socket-io": "^1.0.0",
+    "socket.io": "^4.8.3",
     "ws": "^8.18.3"
   }
 }

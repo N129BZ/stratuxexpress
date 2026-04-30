@@ -1,12 +1,19 @@
 'use strict';
 
 import express from 'express';
+import expressWs from 'express-ws';
 import cors from 'cors';
 import { atan, exp, pi, pow } from 'mathjs';
-import fs from 'fs';
+import fs from 'node:fs';
 import { WebSocketServer } from 'ws';
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import http from 'http';
+import { appsettings } from './appsettings.js';
+import csv from 'csv-parser';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { createGunzip } from 'node:zlib';
+
 //////////////////////////////////////////////////////////////
 // Download link for airport, runway, and frequency csv data:
 //    https://davidmegginson.github.io/ourairports-data/
@@ -15,11 +22,10 @@ import http from 'http';
 const DIRNAME   = process.cwd();
 const ROOT_PATH = `${DIRNAME}/dist`;
 const DB_PATH   = `${ROOT_PATH}/data`;
-const TILE_PATH = `${ROOT_PATH}/tiles`;
+const TILE_PATH = `${DIRNAME}/tiles`;
 
-let histdb;
-const apdb = new Database(`${DB_PATH}/airports.db`, {readonly: true});
-const mapdb = new Database(`${DB_PATH}/mapstate.db`, {readonly: false});
+const apdb = new DatabaseSync(`${DB_PATH}/airports.db`, {readonly: true});
+const mapdb = new DatabaseSync(`${DB_PATH}/mapstate.db`, {readonly: false});
 const databaselist = new Map();
 const databases    = new Map();
 const metadatasets = new Map();
@@ -51,12 +57,6 @@ function loadDatabases() {
     }
     catch(error) {
         console.error(error.message);
-    }
-
-    try {
-        histdb = new Database(`${DB_PATH}/positionhistory.db`, {readonly: true});
-    } catch (error) {
-        console.log(`Failed to load historyDb: ${error}`);
     }
 }
 
@@ -115,8 +115,40 @@ function loadMetadatasets() {
 /**
  * Start the express web server
  */
-const app = express0();
-const httpServer = http.createServer(app);
+const app = express();
+const wss = new WebSocketServer({ noServer:true });
+const server = http.createServer(app);
+var wswxsocket = {};
+
+
+server.on('upgrade', (request, socket, head) => {
+    console.log('Parsing upgrade request...');
+
+    // Optional: Custom Authentication Logic
+    const authenticate = (req) => true; // Replace with real logic
+
+    if (!authenticate(request)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+    }
+
+    // 4. Complete the handshake
+    wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+    });
+
+    // Handle the WebSocket connection
+    wss.on('connection', async (ws) => {
+        wswxsocket = ws;
+        console.log("Calling parseCsv!!");
+        await parseCsv("metars");
+
+        ws.on('message', (message) => {
+            console.log(`Received: ${message}`);
+        });
+    });
+});
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '10mb' }));
@@ -144,7 +176,7 @@ let appOptions = {
 app.use(express.static(ROOT_PATH, appOptions));
 
 app.get('/', (req, res) => {
-        res.sendFile(`${ROOT_PATH}/map2.html`);
+        res.sendFile(`${ROOT_PATH}/map.html`);
 });
 
 app.get("/settings", (req, res) => {
@@ -174,8 +206,7 @@ app.get("/airport", (req, res) => {
 });
 
 app.get("/airportlist", (req, res) => {
-    res.json(airports);
-    res.end();
+    handleAirportListRequest(req, res);
 });
 
 app.get("/getmapstate", async(req, res) => {
@@ -265,39 +296,74 @@ app.post("/savehistory", (req, res) => {
     res.end();
 });
 
-let wxinterval = null;
-const wss = new WebSocketServer({ server: httpServer });
-wss.on('connection', (ws, request) => {
-    if (request.url === '/weather') {
-        console.log('WebSocket /weather connection established');
-        let widx = -1;
-        const wxdata = readJson();
-        if (wxdata && wxdata.weather && Array.isArray(wxdata.weather)) {
-            wxinterval = setInterval(() => {
-                widx++;
-                let rpt = wxdata.weather[widx];
-                ws.send(JSON.stringify(rpt));
-                if (widx === wxdata.weather.length - 1) {
-                    widx = -1;
-                }
-            }, 1000);
-            
+const handleAirportListRequest = async (req, res) => {
+    const { 
+        closed: getclosed, 
+        heliports: getheliports, 
+        minLat: minLatStr, 
+        maxLat: maxLatStr, 
+        minLon: minLonStr, 
+        maxLon: maxLonStr 
+    } = req.query;
+
+    console.log(req.query);
+
+    // Set default headers
+    res.setHeader('Content-Type', 'application/json');
+
+    // Helper to parse booleans
+    const includeClosedAirports = getclosed === 'true';
+    const includeHeliports = getheliports === 'true';
+
+    // Check if all geographic bounds are present
+    if (!minLatStr || !maxLatStr || !minLonStr || !maxLonStr) {
+        return res.status(200).send(JSON.stringify([]));
+    }
+
+    // Parse coordinates to floats
+    const minLat = parseFloat(minLatStr);
+    const maxLat = parseFloat(maxLatStr);
+    const minLon = parseFloat(minLonStr);
+    const maxLon = parseFloat(maxLonStr);
+
+    // Validate numeric conversion
+    if ([minLat, maxLat, minLon, maxLon].some(isNaN)) {
+        return res.status(200).send(JSON.stringify([]));
+    }
+
+    try {
+        // Assuming a DB connection or pool is available
+        // Replace 'db' with your actual database instance (e.g., sqlite3, pg, etc.)
+        let query = `SELECT ident, name, type, longitude_deg, latitude_deg, elevation_ft ` + 
+        `FROM airports ` + 
+        `WHERE latitude_deg BETWEEN ? AND ? ` + 
+        `AND longitude_deg BETWEEN ? AND ? `;
+
+        const params = [minLat, maxLat, minLon, maxLon];
+
+        if (!includeHeliports) {
+        query += `AND type NOT LIKE '%heliport%' AND UPPER(name) NOT LIKE '%HELIPORT%' `;
         }
-    }
-    else if (request.url === '/traffic') {
-        console.log("traffic websocket connected");
-    }
-    else if (request.url === '/situation') {
-        console.log("situation websocket connected");
-    }
 
-    ws.on('close', () => {
-        clearInterval(wxinterval);
-        console.log('Client disconnected.');
-    });
-});
+        if (!includeClosedAirports) {
+            query += `AND type NOT LIKE '%closed%' AND UPPER(name) NOT LIKE '%CLOSED%' `;
+        }
 
-httpServer.listen(8500, '0.0.0.0', () => {
+        query += `ORDER BY name LIMIT 200;`;
+        
+        const q = apdb.prepare(query)
+        const rows = await q.all(minLatStr, maxLatStr, minLonStr, maxLonStr);
+        res.send(JSON.stringify(rows));
+        res.end();
+    } 
+    catch (err) {
+        // Fallback for DB connection or query errors
+        console.log(err);
+        res.status(200).send(JSON.stringify([]));
+    }
+};
+
+server.listen(8500, '0.0.0.0', () => {
     console.log('Server listening on port 8500');
 });
 
@@ -466,26 +532,10 @@ function sleep(ms) {
  */
 let wxdata = {};
 let widx = -1;
-let wswxsocket = {};
-
-(function startupInit() {
-    const wss = new WebSocketServer({ port: 8550 });
-
-    wss.on('connection', (ws) => {
-        console.log('Client connected.');
-        wswxsocket = ws;
-    
-        parseCsv();
-
-        ws.on('close', () => {
-            console.log('Client disconnected.');
-        });
-    });
-})();
-
-async function parseCsv() {
-    const parser = fs
-    .createReadStream(`${DIRNAME}/weather/metars.cache.csv`)
+async function parseCsv(source) {
+    console.log("In parseCSV()!!");
+    const parser = fs 
+    .createReadStream(`${DIRNAME}/weather/${source}.cache.csv`)
     .pipe(csv({
       columns: true,      // Automatically maps columns based on the header row
       skip_empty_lines: true
@@ -503,8 +553,104 @@ async function parseCsv() {
             LocaltimeReceived: new Date()
         }
         wswxsocket.send(JSON.stringify(message));
-        //console.log(message);
-        await delay(600);
+        console.log(message);
+        await delay(1000);
     }
     return true;
 }
+
+async function runDownloads() {
+    downloadAndExtract("metars");
+    setTimeout(() => {
+        downloadAndExtract("metars");
+    }, appsettings.wxupdateintervalmsec);
+}
+
+/**
+ * Download an ADDS weather service file
+ * @param {source} the type of file to download (metar, taf, or pirep)
+ */
+async function downloadAndExtract(source) {
+    
+    const url = appsettings.addscurrentwxurl.replace("###", source);
+    const outputPath = `${DIRNAME}/weather/${source}.cache.csv`;
+    var shouldDownload = false;
+    
+    try {
+        const thresholdMs = appsettings.wxupdateintervalmsec;
+        
+        // Get file stats
+        const stats = await fs.promises.stat(outputPath);
+        const fileAgeMs = Date.now() - stats.mtime.getTime();
+        if (fileAgeMs > thresholdMs) {
+            console.log(`File is ${Math.round(fileAgeMs / 60000)} minutes old. Updating...`);
+            shouldDownload = true;
+        } 
+        else {
+            console.log(`File is fresh (${Math.round(fileAgeMs / 60000)} mins old). Skipping download.`);
+        }
+    }
+    catch (err) {
+        if (err.code === 'ENOENT') {
+            console.log('File does not exist. Downloading now...');
+            shouldDownload = true;
+        } 
+        else {
+            throw err;
+        }
+    }
+    
+    if (shouldDownload) {
+        try {
+            const response = await fetch(url);
+                if (!response.ok) {
+                throw new Error(`Failed to fetch: ${response.statusText}`);
+            }
+
+            // response.body is a ReadableStream
+            const readableStream = response.body;
+            const decompressionStream = createGunzip();
+            const fileStream = createWriteStream(outputPath);
+
+            console.log('Downloading and extracting...');
+            
+            // pipeline handles errors and cleanup automatically
+            await pipeline(
+                readableStream,
+                decompressionStream,
+                fileStream
+            );
+            console.log('Finished! File saved to:', outputPath);
+        }
+        finally {}
+    } 
+}
+
+runDownloads();
+// async function downloadWeatherFiles(source) {
+//     const url = "https://aviationweather.gov/data/cache/###.cache.csv".replace("###", "metars");
+//     const response = await fetch(url);
+//         if (xhr.readyState == 4 && xhr.status == 200) {
+//             let response = xhr.responseText;
+//             //var mxml = unzipSync(new Buffer.From(response).toString('base64'));
+//             let messageJSON = xmlparser.parse(response);
+//             switch(source.type) {
+//                 case "tafs":
+//                     processTafJsonObjects(messageJSON);
+//                     break;
+//                 case "metars":
+//                     processMetarJsonObjects(messageJSON);
+//                     break;
+//                 case "aircraftreports":
+//                     processPirepJsonObjects(messageJSON);
+//                     break;
+//             }
+//         }
+//     };
+//     try { 
+//         xhr.send();
+//     }
+//     catch (err) {
+//         console.log(`Error getting message type ${xmlmessage.type}: ${err}`);
+//     }
+// }
