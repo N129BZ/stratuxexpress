@@ -1,10 +1,10 @@
-'use strict';
 
 import express from 'express';
-import expressWs from 'express-ws';
 import cors from 'cors';
 import { atan, exp, pi, pow } from 'mathjs';
-import fs from 'node:fs';
+import { readdirSync, statSync, createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { Transform } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { DatabaseSync } from 'node:sqlite';
 import http from 'http';
@@ -19,52 +19,51 @@ import { createGunzip } from 'node:zlib';
 //    https://davidmegginson.github.io/ourairports-data/
 //////////////////////////////////////////////////////////////
 
-const DIRNAME   = process.cwd();
+const DIRNAME   = import.meta.dirname;
 const ROOT_PATH = `${DIRNAME}/dist`;
 const DB_PATH   = `${ROOT_PATH}/data`;
 const TILE_PATH = `${DIRNAME}/tiles`;
 
-const apdb = new DatabaseSync(`${DB_PATH}/airports.db`, {readonly: true});
-const mapdb = new DatabaseSync(`${DB_PATH}/mapstate.db`, {readonly: false});
+const apdb = new DatabaseSync(`${DIRNAME}/airports.db`, {readOnly:true});
+const mapstatedb = new DatabaseSync(`${DIRNAME}/mapstate.db`, {readOnly:false});
+
 const databaselist = new Map();
-const databases    = new Map();
-const metadatasets = new Map();
-
-loadDatabases();
-loadMetadatasets();
-
-function loadDatabases() {
+function loadDatabaseList() {
     try {
-        let dbfiles = fs.readdirSync(TILE_PATH);
+        const dbfiles = readdirSync(TILE_PATH);
         dbfiles.forEach((dbname) => {
             if (dbname.endsWith(".db") || dbname.endsWith(".mbtiles")) {
-                var key = dbname.split(".")[0];
+                var key = dbname.toLowerCase().split(".")[0];
                 var dbfile = `${TILE_PATH}/${dbname}`;
                 databaselist.set(key, dbfile);
             }
         });
+    }
+    catch(err) {
+        console.log("NO CHART DATABASES FOUND!!");
+    }
+}
 
+const databases = new Map();
+function loadDatabases() {
+    try {
         databaselist.forEach((dbfile, key) => {
-            try {
-                var db = new Database(dbfile, {readonly: true});
-                databases.set(key, db);
-            }
-            catch (error) {
-                console.error(`Failed to load: ${key}: ${err}`);
-            }
-            
+            console.log(dbfile);
+            const db = new DatabaseSync(dbfile, { readOnly:true });
+            databases.set(key, db);
         });
     }
-    catch(error) {
-        console.error(error.message);
+    catch(err) {
+        console.log(err);
     }
 }
 
 /**
  * Get Map object filled with metadata sets for all mbtiles databases
  */
+const metadatasets = new Map();
 function loadMetadatasets() {
-    let sql = `SELECT name, value FROM metadata UNION SELECT 'minzoom', min(zoom_level) FROM tiles ` + 
+    const sql = `SELECT name, value FROM metadata UNION SELECT 'minzoom', min(zoom_level) FROM tiles ` + 
               `WHERE NOT EXISTS (SELECT * FROM metadata WHERE name='minzoom') UNION SELECT 'maxzoom', max(zoom_level) FROM tiles ` +
               `WHERE NOT EXISTS (SELECT * FROM metadata WHERE name='maxzoom')`;
     
@@ -73,88 +72,63 @@ function loadMetadatasets() {
         item["bounds"] = "";
         item["attribution"] = "";
         let found = false;
-
-        try {
-            const rows = db.prepare(sql).all();
-            rows.forEach((row) => {
-                if (row.value != null) {
-                    item[row.name] = row.value;
-                }
-                if (row.name === "maxzoom" && row.value != null) {
-                    let maxZoomInt = parseInt(row.value); 
-                    let minmaxSql = `SELECT min(tile_column) as xmin, min(tile_row) as ymin, ` + 
-                                    `max(tile_column) as xmax, max(tile_row) as ymax ` +
-                                    `FROM tiles WHERE zoom_level=${maxZoomInt}`;
-                    try {
-                        const minmaxRow = db.prepare(minmaxSql).get();
-                        if (minmaxRow) {
-                            let xmin = minmaxRow.xmin;
-                            let ymin = minmaxRow.ymin; 
-                            let xmax = minmaxRow.xmax; 
-                            let ymax = minmaxRow.ymax;  
-                            
-                            let llmin = tileToDegree(maxZoomInt, xmin, ymin);
-                            let llmax = tileToDegree(maxZoomInt, xmax+1, ymax+1);
-                            
-                            let retarray = `${llmin[0]}, ${llmin[1]}, ${llmax[0]}, ${llmax[1]}`;
-                            item["bounds"] = retarray;
-                            found = true;
-                        }
-                    } catch(error) {
-                        console.error(error);
-                    }
-                }
-            });
+        
+        const query = db.prepare(sql);
+        for (const row of query.iterate()) {
+            if (row.value != null) {
+                item[row.name] = row.value;
+            }
+            if (row.name === "maxzoom" && row.value != null) { 
+                const maxZoomInt = parseInt(row.value); 
+                const sql2 = `SELECT min(tile_column) as xmin, min(tile_row) as ymin, ` + 
+                             `max(tile_column) as xmax, max(tile_row) as ymax ` +
+                             `FROM tiles WHERE zoom_level=?`;
+                const metadata = db.prepare(sql2).get()
+                const xmin = metadata.xmin;
+                const ymin = metadata.ymin; 
+                const xmax = metadata.xmax; 
+                const ymax = metadata.ymax;  
+                
+                const llmin = tileToDegree(maxZoomInt, xmin, ymin);
+                const llmax = tileToDegree(maxZoomInt, xmax+1, ymax+1);
+                
+                const retarray = `${llmin[0]}, ${llmin[1]}, ${llmax[0]}, ${llmax[1]}`;
+                item["bounds"] = retarray;
+                found = true;
+            }
+        }
+        if (found) {
             metadatasets.set(key, item);
-        } catch(error) {
-            console.error(error);
         }
     });
 }
+loadDatabaseList();
+loadDatabases();
+loadMetadatasets();
 
 /**
  * Start the express web server
  */
 const app = express();
-const wss = new WebSocketServer({ noServer:true });
-const server = http.createServer(app);
+const httpServer = http.createServer(app);
+const ws = new WebSocketServer({port:appsettings.wsport});
 var wswxsocket = {};
 
+ws.on('connection', (ws) => {
+    console.log("Client connected");
+    wswxsocket = ws;
+    parseCsv("metars");
 
-server.on('upgrade', (request, socket, head) => {
-    console.log('Parsing upgrade request...');
-
-    // Optional: Custom Authentication Logic
-    const authenticate = (req) => true; // Replace with real logic
-
-    if (!authenticate(request)) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
-    }
-
-    // 4. Complete the handshake
-    wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request);
-    });
-
-    // Handle the WebSocket connection
-    wss.on('connection', async (ws) => {
-        wswxsocket = ws;
-        console.log("Calling parseCsv!!");
-        await parseCsv("metars");
-
-        ws.on('message', (message) => {
-            console.log(`Received: ${message}`);
-        });
-    });
+    ws.on('message', (data) => {
+        console.log(data);
+    })
 });
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(cors());
 
-let appOptions = {
+const appOptions = {
     maxAge: 900000,
     dotfiles: 'ignore',
     etag: false,
@@ -179,9 +153,9 @@ app.get('/', (req, res) => {
         res.sendFile(`${ROOT_PATH}/map.html`);
 });
 
-app.get("/settings", (req, res) => {
-    let rawdata = fs.readFileSync(`${DB_PATH}/settings.json`);
-    res.json(JSON.parse(rawdata));
+app.get("/appsettings", (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(JSON.stringify(appsettings));
     res.end();
 });
 
@@ -194,24 +168,17 @@ app.get("/databaselist", (req, res) => {
     res.end();
 });
 
-app.get("/airport", (req, res) => {
-    let id = req.query.id;
-    let obj = handleAirportRequest(id);
-    if (!obj) {
-        res.json({});
-    } 
-    else {
-        res.json(obj);
-    }
+app.get("/airport", async(req, res) => {
+    handleAirportRequest(req, res);
 });
 
 app.get("/airportlist", (req, res) => {
-    handleAirportListRequest(req, res);
+    Promise.resolve(handleAirportListRequest(req, res));
 });
 
 app.get("/getmapstate", async(req, res) => {
     try {
-        const row = mapdb.prepare("SELECT state, timestamp FROM mapstate WHERE id = 1").get();
+        const row = mapstatedb.prepare("SELECT state, timestamp FROM mapstate WHERE id = 1").get();
         if (row && row.state) {
             let mapstate = { state: JSON.parse(row.state), timestamp: row.timestamp };
             res.json(mapstate);
@@ -229,7 +196,7 @@ app.post("/savemapstate", (req, res) => {
     const ts = newState["timestamp"];
     try {
         // Update the state and timestamp fields in the mapstate table where id = 1
-        const stmt = mapdb.prepare("UPDATE mapstate SET state = ?, timestamp = ? WHERE id = 1");
+        const stmt = mapstatedb.prepare("UPDATE mapstate SET state = ?, timestamp = ? WHERE id = 1");
         stmt.run(JSON.stringify(newState), ts);
         res.json({ success: true });
         console.log("Mapstate and timestamp updated successfully");
@@ -326,23 +293,18 @@ const handleAirportListRequest = async (req, res) => {
     const minLon = parseFloat(minLonStr);
     const maxLon = parseFloat(maxLonStr);
 
-    // Validate numeric conversion
     if ([minLat, maxLat, minLon, maxLon].some(isNaN)) {
         return res.status(200).send(JSON.stringify([]));
     }
 
     try {
-        // Assuming a DB connection or pool is available
-        // Replace 'db' with your actual database instance (e.g., sqlite3, pg, etc.)
-        let query = `SELECT ident, name, type, longitude_deg, latitude_deg, elevation_ft ` + 
-        `FROM airports ` + 
-        `WHERE latitude_deg BETWEEN ? AND ? ` + 
-        `AND longitude_deg BETWEEN ? AND ? `;
-
-        const params = [minLat, maxLat, minLon, maxLon];
+        var query = `SELECT ident, name, type, longitude_deg, latitude_deg, elevation_ft ` + 
+                    `FROM airports ` + 
+                    `WHERE latitude_deg BETWEEN ${minLat} AND ${maxLat} ` + 
+                    `AND longitude_deg BETWEEN ${minLon} AND ${maxLon} `;
 
         if (!includeHeliports) {
-        query += `AND type NOT LIKE '%heliport%' AND UPPER(name) NOT LIKE '%HELIPORT%' `;
+            query += `AND type NOT LIKE '%heliport%' AND UPPER(name) NOT LIKE '%HELIPORT%' `;
         }
 
         if (!includeClosedAirports) {
@@ -352,9 +314,9 @@ const handleAirportListRequest = async (req, res) => {
         query += `ORDER BY name LIMIT 200;`;
         
         const q = apdb.prepare(query)
-        const rows = await q.all(minLatStr, maxLatStr, minLonStr, maxLonStr);
-        res.send(JSON.stringify(rows));
-        res.end();
+        const rows = q.all();
+        
+        res.status(200).send(JSON.stringify(rows));
     } 
     catch (err) {
         // Fallback for DB connection or query errors
@@ -363,36 +325,12 @@ const handleAirportListRequest = async (req, res) => {
     }
 };
 
-server.listen(8500, '0.0.0.0', () => {
+httpServer.listen(8500, '0.0.0.0', () => {
     console.log('Server listening on port 8500');
 });
 
-function getPositionHistory() {
-    try {
-        const rows = mapdb.prepare("SELECT * FROM position_history ORDER BY timestamp DESC").all();
-        res.json(rows);
-    } 
-    catch (err) {
-        console.error("Failed to get position history:", err);
-        res.status(500).json({ error: err.message });
-    }
-}
-
-function savePositionHistory(req) {
-    try {
-        const poshist = JSON.parse(req.body);
-        // Update the state and timestamp fields in the mapstate table where id = 1
-        const stmt = mapdb.prepare(`INSERT position_history (longitude, latitude, heading, altitude)
-                                    VALUES (?, ?, ?, ?);`);
-        stmt.run(poshist.longitude, poshist.latitude, poshist.heading, poshist.altitude);
-        console.log("Position history saved.");
-    } 
-    catch (err) {
-        console.error("Failed to update position history:", err);
-    }
-}
-
-function handleAirportRequest(id) {
+function handleAirportRequest(req, res) {
+    const id = req.query.id;
     const sql = `
         SELECT
         airports.ident,
@@ -426,21 +364,22 @@ function handleAirportRequest(id) {
         ) AS runways,
         airports.wikipedia_link
         FROM airports
-        WHERE airports.ident = ?;
-    `;
+        WHERE airports.ident = '${id}'`;
+
     try {
-        let obj = apdb.prepare(sql).get(id);
+        const obj = apdb.prepare(sql).get();
         if (obj) {
             obj.frequencies = obj.frequencies ? JSON.parse(obj.frequencies) : [];
             obj.runways = obj.runways ? JSON.parse(obj.runways) : [];
-            return obj;
+            res.status(200).json(obj);
         }
         else {
-            return {};
+            res.status(200).json({});
         }
     }
     catch(err) {
         console.log("Error in handleAirportRequest", err);
+        res.status(200).json({});
     }
 }
 
@@ -502,9 +441,9 @@ function loadTile(z, x, y, response, db) {
         }
     }
     catch (err) {
-        // console.error("Error in loadTile", err);
-        // response.writeHead(500);
-        // response.end();
+        //console.error("Error in loadTile", err);
+        response.writeHead(500);
+        response.end();
     }
 }
 
@@ -534,28 +473,33 @@ let wxdata = {};
 let widx = -1;
 async function parseCsv(source) {
     console.log("In parseCSV()!!");
-    const parser = fs 
-    .createReadStream(`${DIRNAME}/weather/${source}.cache.csv`)
-    .pipe(csv({
-      columns: true,      // Automatically maps columns based on the header row
-      skip_empty_lines: true
-    }));
-
-    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-    for await (const record of parser) {
-        // 'record' is a JavaScript object with keys from the header
-        const message = {
-            Type: record.metar_type,
-            Location: record.station_id,
-            Time: record.observation_time,
-            Data: record.raw_text,
-            LocaltimeReceived: new Date()
+    const delayStream = new Transform({
+        objectMode:true,
+        async transform(row, encoding, callback) {
+            await new Promise(resolve => setTimeout(resolve, 600));
+            this.push(row);
+            callback();
         }
+    });
+
+    const parser = createReadStream(`${DIRNAME}/weather/${source}.cache.csv`)
+    .pipe(csv())
+    .pipe(delayStream)
+    .on('data', (data) => {
+        const message = {
+                Type: data.metar_type,
+                Location: data.station_id,
+                Time: data.observation_time,
+                Data: data.raw_text,
+                LocaltimeReceived: new Date()
+            };
         wswxsocket.send(JSON.stringify(message));
         console.log(message);
-        await delay(1000);
-    }
+        sleep(600);
+    })
+    .on('end', () => {
+        console.log("Done parsing CSV file");
+    });
     return true;
 }
 
@@ -580,7 +524,7 @@ async function downloadAndExtract(source) {
         const thresholdMs = appsettings.wxupdateintervalmsec;
         
         // Get file stats
-        const stats = await fs.promises.stat(outputPath);
+        const stats = statSync(outputPath);
         const fileAgeMs = Date.now() - stats.mtime.getTime();
         if (fileAgeMs > thresholdMs) {
             console.log(`File is ${Math.round(fileAgeMs / 60000)} minutes old. Updating...`);

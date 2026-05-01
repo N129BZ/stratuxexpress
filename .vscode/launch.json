@@ -12,7 +12,8 @@
                 "<node_internals>/**"
             ],
             "program": "${workspaceFolder}/server.js",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "runtimeExecutable": "/home/bro/.nvm/versions/node/v24.14.0/bin/node"
         }
     ]
 }
