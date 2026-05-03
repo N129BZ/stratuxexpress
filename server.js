@@ -1,18 +1,19 @@
 
 import express from 'express';
+import http from 'http';
 import cors from 'cors';
 import { atan, exp, pi, pow } from 'mathjs';
-import { readdirSync, statSync, createReadStream } from 'node:fs';
+import { readdirSync, statSync, createReadStream, createWriteStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { Transform } from 'node:stream';
+import { Transform, Readable } from 'node:stream';
+import { writeFile, rename } from 'node:fs/promises';
 import { WebSocketServer } from 'ws';
 import { DatabaseSync } from 'node:sqlite';
-import http from 'http';
 import { appsettings } from './appsettings.js';
-import csv from 'csv-parser';
-import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
+import { XMLHttpRequest } from "xmlhttprequest";
+import { XMLParser } from 'fast-xml-parser';
 
 //////////////////////////////////////////////////////////////
 // Download link for airport, runway, and frequency csv data:
@@ -168,7 +169,7 @@ app.get("/databaselist", (req, res) => {
     res.end();
 });
 
-app.get("/airport", async(req, res) => {
+app.get("/airport", (req, res) => {
     handleAirportRequest(req, res);
 });
 
@@ -331,42 +332,17 @@ httpServer.listen(8500, '0.0.0.0', () => {
 
 function handleAirportRequest(req, res) {
     const id = req.query.id;
-    const sql = `
-        SELECT
-        airports.ident,
-        airports.name,
-        airports.type,
-        airports.longitude_deg AS lon,
-        airports.latitude_deg AS lat,
-        airports.elevation_ft AS elevation,
-        (
-            SELECT json_group_array(
-                json_object(
-                    'frequency', frequency_mhz,
-                    'description', description
-                )
-            )
-            FROM frequencies
-            WHERE frequencies.airport_ident = airports.ident
-        ) AS frequencies,
-        (
-            SELECT json_group_array(
-                json_object(
-                    'length', length_ft,
-                    'width', width_ft,
-                    'surface', surface,
-                    'le_ident', le_ident,
-                    'he_ident', he_ident
-                )
-            )
-            FROM runways
-            WHERE runways.airport_ident = airports.ident
-        ) AS runways,
-        airports.wikipedia_link
-        FROM airports
-        WHERE airports.ident = '${id}'`;
-
+    const sql = 
+    `SELECT airports.ident,airports.name,airports.type,airports.longitude_deg AS lon,` +
+           `airports.latitude_deg AS lat,airports.elevation_ft AS elevation,airports.wikipedia_link, ` +
+           `(SELECT json_group_array(json_object('frequency',frequency_mhz,'description',description)) ` +
+     	        `FROM frequencies WHERE frequencies.airport_ident = airports.ident) AS frequencies, ` +
+    	   `(SELECT json_group_array(json_object('length',length_ft,'width',width_ft,` + 
+                   `'surface',surface,'le_ident',le_ident,'he_ident',he_ident)) ` +
+                `FROM runways WHERE runways.airport_ident = airports.ident) AS runways ` +
+    `FROM airports WHERE airports.ident = '${id}'`;
     try {
+        console.log(sql);    
         const obj = apdb.prepare(sql).get();
         if (obj) {
             obj.frequencies = obj.frequencies ? JSON.parse(obj.frequencies) : [];
@@ -476,7 +452,7 @@ async function parseCsv(source) {
     const delayStream = new Transform({
         objectMode:true,
         async transform(row, encoding, callback) {
-            await new Promise(resolve => setTimeout(resolve, 600));
+            await new Promise(resolve => setTimeout(resolve, 1000));
             this.push(row);
             callback();
         }
@@ -503,23 +479,76 @@ async function parseCsv(source) {
     return true;
 }
 
-async function runDownloads() {
-    downloadAndExtract("metars");
-    setTimeout(() => {
-        downloadAndExtract("metars");
-    }, appsettings.wxupdateintervalmsec);
+/**
+ * Download ADDS weather service files
+ */
+const xmlParseOptions = {
+    ignoreAttributes : false,
+    attributeNamePrefix : "",
+    allowBooleanAttributes: true,
+    ignoreDeclaration: true,
+    isArray: (name, jpath, isLeafNode, isAttribute) => { 
+        if( alwaysArray.indexOf(jpath) !== -1) return true;
+    }
+};
+const xmlparser = new XMLParser(xmlParseOptions);
+
+async function downloadAndExtractXML() {
+    const sources = ["metars", "tafs", "aircraftreports"];
+
+    for (const source of sources) {
+        const url = appsettings.addscurrentwxurl.replace("###", source);
+        const outputTmp = `${DIRNAME}/weather/${source}.json.tmp`;
+        const outputFile = outputTmp.replace(".tmp", "");
+
+        if (shouldDownload(outputFile)) {
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
+
+                // --- MOVE STREAM DEFINITION INSIDE THE LOOP ---
+                let xmlData = ""; 
+                const xmlParserStream = new Transform({
+                    transform(chunk, encoding, callback) {
+                        xmlData += chunk.toString();
+                        callback();
+                    },
+                    flush(callback) {
+                        try {
+                            const jsonObj = xmlparser.parse(xmlData);
+                            this.push(JSON.stringify(jsonObj, null, 2));
+                            callback();
+                        } catch (err) {
+                            callback(err);
+                        }
+                    }
+                });
+                // ----------------------------------------------
+
+                const readableStream = Readable.fromWeb(response.body);
+                const decompressionStream = createGunzip();
+                const fileStream = createWriteStream(outputTmp);
+
+                console.log(`Downloading and extracting ${source}...`);
+                
+                await pipeline(
+                    readableStream,
+                    decompressionStream,
+                    xmlParserStream,
+                    fileStream
+                );
+
+                console.log(`File saved as: ${source}.json.tmp, renaming as ${source}.json`);
+                rename(outputTmp, outputFile);
+            } catch (err) {
+                console.error(`Error processing ${source}:`, err.message);
+            }
+        } 
+    }
 }
 
-/**
- * Download an ADDS weather service file
- * @param {source} the type of file to download (metar, taf, or pirep)
- */
-async function downloadAndExtract(source) {
-    
-    const url = appsettings.addscurrentwxurl.replace("###", source);
-    const outputPath = `${DIRNAME}/weather/${source}.cache.csv`;
-    var shouldDownload = false;
-    
+function shouldDownload(outputPath) { 
+    var answer = false;
     try {
         const thresholdMs = appsettings.wxupdateintervalmsec;
         
@@ -528,7 +557,7 @@ async function downloadAndExtract(source) {
         const fileAgeMs = Date.now() - stats.mtime.getTime();
         if (fileAgeMs > thresholdMs) {
             console.log(`File is ${Math.round(fileAgeMs / 60000)} minutes old. Updating...`);
-            shouldDownload = true;
+            answer = true;
         } 
         else {
             console.log(`File is fresh (${Math.round(fileAgeMs / 60000)} mins old). Skipping download.`);
@@ -537,64 +566,22 @@ async function downloadAndExtract(source) {
     catch (err) {
         if (err.code === 'ENOENT') {
             console.log('File does not exist. Downloading now...');
-            shouldDownload = true;
+            answer = true;
         } 
         else {
             throw err;
         }
     }
-    
-    if (shouldDownload) {
-        try {
-            const response = await fetch(url);
-                if (!response.ok) {
-                throw new Error(`Failed to fetch: ${response.statusText}`);
-            }
 
-            // response.body is a ReadableStream
-            const readableStream = response.body;
-            const decompressionStream = createGunzip();
-            const fileStream = createWriteStream(outputPath);
-
-            console.log('Downloading and extracting...');
-            
-            // pipeline handles errors and cleanup automatically
-            await pipeline(
-                readableStream,
-                decompressionStream,
-                fileStream
-            );
-            console.log('Finished! File saved to:', outputPath);
-        }
-        finally {}
-    } 
+    return answer;
 }
 
-runDownloads();
-// async function downloadWeatherFiles(source) {
-//     const url = "https://aviationweather.gov/data/cache/###.cache.csv".replace("###", "metars");
-//     const response = await fetch(url);
-//         if (xhr.readyState == 4 && xhr.status == 200) {
-//             let response = xhr.responseText;
-//             //var mxml = unzipSync(new Buffer.From(response).toString('base64'));
-//             let messageJSON = xmlparser.parse(response);
-//             switch(source.type) {
-//                 case "tafs":
-//                     processTafJsonObjects(messageJSON);
-//                     break;
-//                 case "metars":
-//                     processMetarJsonObjects(messageJSON);
-//                     break;
-//                 case "aircraftreports":
-//                     processPirepJsonObjects(messageJSON);
-//                     break;
-//             }
-//         }
-//     };
-//     try { 
-//         xhr.send();
-//     }
-//     catch (err) {
-//         console.log(`Error getting message type ${xmlmessage.type}: ${err}`);
-//     }
-// }
+async function runDownloads() {
+    downloadAndExtractXML();
+    setTimeout(() => {
+        downloadAndExtractXML();
+    }, appsettings.wxupdateintervalmsec);
+}
+
+downloadAndExtractXML();
+
