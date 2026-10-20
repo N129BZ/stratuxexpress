@@ -9,7 +9,7 @@ import { Transform, Readable } from 'node:stream';
 import { writeFile, rename } from 'node:fs/promises';
 import { WebSocketServer } from 'ws';
 import { DatabaseSync } from 'node:sqlite';
-import { appsettings } from './appsettings.js';
+//import { appsettings } from './appsettings.json' with { type: 'json' };
 import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
 import { XMLHttpRequest } from "xmlhttprequest";
@@ -21,6 +21,8 @@ import fs from 'fs/promises';
 //    https://davidmegginson.github.io/ourairports-data/
 //////////////////////////////////////////////////////////////
 
+const settingsPath = new URL('./appsettings.json', import.meta.url);
+const appsettings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
 const DIRNAME = import.meta.dirname;
 const ROOT_PATH = `${DIRNAME}/dist`;
 const DB_PATH = `${ROOT_PATH}/data`;
@@ -276,6 +278,10 @@ app.post("/savehistory", (req, res) => {
     res.writeHead(200).end();
 });
 
+app.post("/setdefaultposition", (req, res) => {
+
+}); 
+
 function handleAirportListRequest(req, res) {
     const {
         minLat: minLatStr,
@@ -506,13 +512,8 @@ async function sendMessageToClients(jsonmessage) {
  */
 async function getJsonDataFromFile(filePath) {
     try {
-        // 1. Read the file string from disk
         const fileContent = await fs.readFile(filePath, 'utf8');
-
-        // 2. Parse the string into a live JavaScript object
         const jsonResponse = JSON.parse(fileContent);
-
-        // 4. Extract and filter the raw_text entries
         return jsonResponse;
 
     } catch (error) {
