@@ -9,10 +9,8 @@ import { Transform, Readable } from 'node:stream';
 import { writeFile, rename } from 'node:fs/promises';
 import { WebSocketServer } from 'ws';
 import { DatabaseSync } from 'node:sqlite';
-//import { appsettings } from './appsettings.json' with { type: 'json' };
 import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
-import { XMLHttpRequest } from "xmlhttprequest";
 import { XMLParser } from 'fast-xml-parser';
 import fs from 'fs/promises';
 
