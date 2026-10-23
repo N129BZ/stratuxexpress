@@ -23,10 +23,9 @@ const settingsPath = new URL('./appsettings.json', import.meta.url);
 const appsettings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
 const DIRNAME = import.meta.dirname;
 const ROOT_PATH = `${DIRNAME}/dist`;
-const DB_PATH = `${ROOT_PATH}/data`;
 const TILE_PATH = `${DIRNAME}/tiles`;
 
-const apdb = new DatabaseSync(`${DIRNAME}/airports.db`, { readOnly: true });
+const airportdb = new DatabaseSync(`${DIRNAME}/airports.db`, { readOnly: true });
 const mapstatedb = new DatabaseSync(`${DIRNAME}/mapstate.db`, { readOnly: false });
 const connections = new Map();
 
@@ -332,7 +331,7 @@ function handleAirportListRequest(req, res) {
 
         console.log(sql);
         try {
-            const rows = apdb.prepare(sql).all();
+            const rows = airportdb.prepare(sql).all();
             // Convert the SQLite JSON strings into native JS Arrays for all returned airports
             const mappedRows = rows.map(airport => ({
                 ...airport,
@@ -378,7 +377,7 @@ async function handleAirportRequest(req, res) {
 
     try {
         console.log(sql);
-        const obj = apdb.prepare(sql).get();
+        const obj = airportdb.prepare(sql).get();
         if (obj) {
             res.status(200).json(obj).end();
         }
