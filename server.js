@@ -470,20 +470,11 @@ function tileToDegree(z, x, y) {
     return [lon, lat]
 }
 
-/* This function is guaranteed to run first when imported or required.
- * Place any initialization logic here.
- */
-let wxdata = {};
-let widx = -1;
-
 // Helper function for sleeping
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function sendWeatherData() {
-    console.log('In sendWeatherData()!!');
-
     const sources = ["metars", "tafs", "aircraftreports"];
-
     for (const source of sources) {
         const filePath = `${DIRNAME}/weather/${source}.json`;
         const jsonData = await getJsonDataFromFile(filePath);
