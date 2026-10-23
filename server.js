@@ -193,9 +193,9 @@ app.get("/getmapstate", async (req, res) => {
         const row = mapstatedb.prepare("SELECT state FROM mapstate WHERE id = 1").get();
         if (row && row.state) {
             let mapstate = { state: JSON.parse(row.state) }; //, timestamp: row.timestamp };
-            res.status(200).json(mapstate);
+            res.send(JSON.stringify(mapstate)).end();
         } else {
-            res.json({});
+            res.json({}).end(200);
         }
     } catch (err) {
         console.error("Failed to get mapstate:", err);
