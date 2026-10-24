@@ -8,9 +8,12 @@ lerna-debug.log*
 
 tiles/
 weather/
+airports/
+
 package-lock.json
 
-mapstate.db
+# Databases
+*.db
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
